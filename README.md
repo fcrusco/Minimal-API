@@ -26,6 +26,8 @@ Minimal APIs são uma abordagem leve e direta para construir endpoints HTTP no A
 - **Microsoft.EntityFrameworkCore.InMemory:** 10.0.11
 - **Scalar.AspNetCore:** 2.17.2
 
+<img width="435" height="645" alt="image" src="https://github.com/user-attachments/assets/4d4498ad-0acd-4fe3-be02-09c1b1f7b745" />
+
 ---
 
 ## 🇺🇸 English
