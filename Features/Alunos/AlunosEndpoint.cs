@@ -1,5 +1,5 @@
 ﻿using GestaoAcademica.Api.Data;                    // Importa o namespace do contexto de banco de dados (AppDbContext)
-using Microsoft.AspNetCore.Http.HttpResults;      // Importa os resultados tipados HTTP (Created, Ok, NotFound, etc.)
+using Microsoft.AspNetCore.Http.HttpResults;      // Importa os resultados tipados HTTP (Created, Ok, NotFound, ValidationProblem, etc.)
 using Microsoft.EntityFrameworkCore;              // Importa as extensões e métodos assíncronos do EF Core (ToListAsync, etc.)
 using static GestaoAcademica.Api.Features.Alunos.Aluno; // Importa estaticamente os records aninhados (SalvarAlunoRequest e AlunoResponse)
 
@@ -30,10 +30,33 @@ public static class AlunosEndpoint                // Declara uma classe estátic
     }
 
 
+    // Valida os campos obrigatórios do DTO de entrada. Retorna null quando os dados são válidos,
+    // ou um ValidationProblem (400) com o dicionário de erros por campo quando algo está inválido.
+    private static ValidationProblem? ValidarAluno(SalvarAlunoRequest request)
+    {
+        var erros = new Dictionary<string, string[]>();
+
+        if (string.IsNullOrWhiteSpace(request.Nome))
+            erros[nameof(request.Nome)] = ["O nome do aluno é obrigatório."];
+
+        if (string.IsNullOrWhiteSpace(request.Turma))
+            erros[nameof(request.Turma)] = ["A turma é obrigatória."];
+
+        if (string.IsNullOrWhiteSpace(request.Periodo))
+            erros[nameof(request.Periodo)] = ["O período é obrigatório."];
+
+        return erros.Count > 0 ? TypedResults.ValidationProblem(erros) : null;
+    }
+
 
     // Handler assíncrono para cadastrar um novo aluno, recebendo o DTO de entrada e o contexto do banco via injeção de método
-    private static async Task<Created<Aluno>> CriarAluno(SalvarAlunoRequest request, AppDbContext db)
+    // Retorna AlunoResponse (DTO de saída) em vez da entidade Aluno, mantendo o contrato consistente com os demais endpoints
+    // Valida o request antes de qualquer acesso ao banco
+    private static async Task<Results<Created<AlunoResponse>, ValidationProblem>> CriarAluno(SalvarAlunoRequest request, AppDbContext db)
     {
+        var erroValidacao = ValidarAluno(request);
+        if (erroValidacao is not null) return erroValidacao;
+
         // Calcula o próximo ID de forma incremental: se houver registros, pega o maior ID e soma 1, caso contrário inicia em 1
         int proximoId = await db.Alunos.AnyAsync()
             ? await db.Alunos.MaxAsync(a => a.Id) + 1
@@ -51,10 +74,11 @@ public static class AlunosEndpoint                // Declara uma classe estátic
         db.Alunos.Add(aluno);          // Adiciona a nova entidade ao rastreamento do Entity Framework
         await db.SaveChangesAsync();   // Persiste as alterações de forma assíncrona no banco de dados
 
-        // Retorna o status HTTP 201 Created contendo a URI de acesso ao novo recurso e o objeto criado
-        return TypedResults.Created($"/api/alunos/{aluno.Id}", aluno);
-    }
+        var response = new AlunoResponse(aluno.Id, aluno.Nome, aluno.Turma, aluno.Periodo);
 
+        // Retorna o status HTTP 201 Created contendo a URI de acesso ao novo recurso e o DTO de saída
+        return TypedResults.Created($"/api/alunos/{aluno.Id}", response);
+    }
 
 
     // Handler assíncrono que consulta todos os alunos e os mapeia para uma lista de DTOs de resposta
@@ -71,33 +95,38 @@ public static class AlunosEndpoint                // Declara uma classe estátic
     }
 
 
-
     // Handler assíncrono para buscar um aluno específico por ID, podendo retornar Ok ou NotFound
-    private static async Task<Results<Ok<Aluno>, NotFound>> ObterPorId(int id, AppDbContext db)
+    // [Item 1] Retorna AlunoResponse em vez da entidade Aluno crua
+    private static async Task<Results<Ok<AlunoResponse>, NotFound>> ObterPorId(int id, AppDbContext db)
     {
         var aluno = await db.Alunos.FindAsync(id); // Localiza o registro na base de dados utilizando a chave primária
+        if (aluno is null) return TypedResults.NotFound(); // Retorna 404 se o registro não for encontrado
 
-        // Operador condicional: se o aluno existir retorna 200 OK com o objeto, senão retorna 404 NotFound
-        return aluno is not null ? TypedResults.Ok(aluno) : TypedResults.NotFound();
+        var response = new AlunoResponse(aluno.Id, aluno.Nome, aluno.Turma, aluno.Periodo);
+        return TypedResults.Ok(response); // Retorna 200 OK com o DTO de saída
     }
 
 
-
     // Handler assíncrono para atualizar dados de um aluno existente, retornando NoContent ou NotFound
-    private static async Task<Results<NoContent, NotFound>> AtualizarAluno(int id, Aluno alunoAtualizado, AppDbContext db)
+    // Agora recebe o DTO de entrada (SalvarAlunoRequest) em vez da entidade Aluno inteira,
+    // evitando que o cliente envie/manipule campos como o Id diretamente no corpo da requisição.
+    // Valida o request antes de consultar o banco
+    private static async Task<Results<NoContent, NotFound, ValidationProblem>> AtualizarAluno(int id, SalvarAlunoRequest request, AppDbContext db)
     {
+        var erroValidacao = ValidarAluno(request);
+        if (erroValidacao is not null) return erroValidacao;
+
         var alunoExistente = await db.Alunos.FindAsync(id); // Busca o aluno pelo ID informado na rota
         if (alunoExistente is null) return TypedResults.NotFound(); // Retorna 404 se o registro não for encontrado
 
-        // Atualiza as propriedades da entidade rastreada com os novos dados recebidos
-        alunoExistente.Nome = alunoAtualizado.Nome;
-        alunoExistente.Turma = alunoAtualizado.Turma;
-        alunoExistente.Periodo = alunoAtualizado.Periodo;
+        // Atualiza as propriedades da entidade rastreada com os novos dados recebidos no DTO
+        alunoExistente.Nome = request.Nome;
+        alunoExistente.Turma = request.Turma;
+        alunoExistente.Periodo = request.Periodo;
 
         await db.SaveChangesAsync();         // Salva as alterações efetivadas no banco
         return TypedResults.NoContent();     // Retorna o status HTTP 204 No Content indicando sucesso sem corpo de resposta
     }
-
 
 
     // Handler assíncrono para remover um aluno da base de dados
